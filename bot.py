@@ -110,8 +110,8 @@ def generate_agentic_caption(symbol, htf_data, ltf_data):
     response = ai_model.generate_content(prompt)
     return response.text
 
-# --- 4. UPGRADED CHART GENERATION & UPLOAD ---
-def create_and_upload_chart(df, symbol):
+# --- 4. ULTIMATE CHART GENERATION (S/R Zones, SL/TP, Arrows) ---
+def create_and_upload_chart(df, symbol, tech_data):
     df_chart = df.tail(60) 
     coin_name = symbol.replace("USDT", "")
     latest_data = df_chart.iloc[-1]
@@ -121,54 +121,78 @@ def create_and_upload_chart(df, symbol):
     current_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
     timestamp_str = current_ist.strftime('%d %b %Y • %I:%M %p IST')
 
-    # Determine price color based on candle direction
-    price_color = '#00ff00' if latest_data['close'] >= latest_data['open'] else '#ff3333'
+    # Fetch Support/Resistance from the Math Engine
+    support = tech_data['support_level']
+    resistance = tech_data['resistance_level']
+    is_bullish = tech_data['trend_status'] == 'Uptrend'
 
-    # Indicators
+    # Auto-Calculate Stop Loss (SL) and Take Profit (TP) with 1:1.5 Risk/Reward
+    arrow_data = [np.nan] * len(df_chart)
+    if is_bullish:
+        sl = support * 0.998 # SL slightly below support zone
+        risk = latest_price - sl
+        tp = latest_price + (risk * 1.5)
+        arrow_data[-1] = latest_data['low'] * 0.995 # Arrow points up from below candle
+        marker_shape = '^'
+        trade_color = '#00ff00' # Green for Long
+    else:
+        sl = resistance * 1.002 # SL slightly above resistance zone
+        risk = sl - latest_price
+        tp = latest_price - (risk * 1.5)
+        arrow_data[-1] = latest_data['high'] * 1.005 # Arrow points down from above candle
+        marker_shape = 'v'
+        trade_color = '#ff3333' # Red for Short
+
+    # 1. Overlay indicators and Breakout Arrow
     ema20 = df_chart['close'].ewm(span=20, adjust=False).mean()
     ema50 = df_chart['close'].ewm(span=50, adjust=False).mean()
     
-    # Add plots
     added_plots = [
         mpf.make_addplot(ema20, color='#00ffcc', width=1.5), 
         mpf.make_addplot(ema50, color='#ff00ff', width=1.5), 
-        mpf.make_addplot(pd.Series([latest_price]*len(df_chart), index=df_chart.index), color=price_color, linestyle='--', width=0.8)
+        mpf.make_addplot(pd.Series([latest_price]*len(df_chart), index=df_chart.index), color='#ffffff', linestyle=':', width=0.8),
+        mpf.make_addplot(arrow_data, type='scatter', marker=marker_shape, markersize=250, color=trade_color) # The Arrow
     ]
     
+    # 2. Support and Resistance Shaded Boxes
+    shaded_zones = [
+        dict(y1=support, y2=support*0.995, color='#00ffcc', alpha=0.15), # Greenish Support Box
+        dict(y1=resistance, y2=resistance*1.005, color='#ff00ff', alpha=0.15) # Pinkish Resistance Box
+    ]
+
+    # 3. SL and TP Horizontal Lines
+    target_lines = dict(hlines=[tp, sl], colors=['#00ff00', '#ff3333'], linestyle='-.', linewidths=[1.5, 1.5])
+
     # Professional Dark Theme
     custom_colors = mpf.make_marketcolors(
-        up='#00ff00', down='#ff3333',
-        edge={'up': '#00ff00', 'down': '#ff3333'},
-        wick={'up': '#00ff00', 'down': '#ff3333'},
-        volume='in', inherit=True
+        up='#00ff00', down='#ff3333', edge={'up': '#00ff00', 'down': '#ff3333'},
+        wick={'up': '#00ff00', 'down': '#ff3333'}, volume='in', inherit=True
         )
 
     custom_style = mpf.make_mpf_style(
-        marketcolors=custom_colors,
-        facecolor='#080808',  
-        gridcolor='#1a1a1a', 
-        gridstyle='dotted',
-        y_on_right=True,     
-        rc={'font.size': 10, 'axes.labelsize': 12, 'axes.titlesize': 16, 'xtick.color': '#888888', 'ytick.color': '#888888', 'axes.edgecolor': '#333333', 'axes.labelcolor': '#ffffff'}
+        marketcolors=custom_colors, facecolor='#080808', gridcolor='#1a1a1a', 
+        gridstyle='dotted', y_on_right=True,     
+        rc={'font.size': 10, 'axes.labelsize': 12, 'axes.titlesize': 16, 'xtick.color': '#888888', 'ytick.color': '#888888', 'axes.edgecolor': '#333333'}
         )
     
     buf = io.BytesIO()
     
-    # Draw chart with Title and Timestamp
+    # Draw chart with Zones and Lines
     fig, axlist = mpf.plot(df_chart, type='candle', style=custom_style, addplot=added_plots, volume=True,
-             title=f"{coin_name} / USDT - 1H Timeframe\n{timestamp_str}\n@desicryptopro",
-             figsize=(10, 10), returnfig=True, volume_panel=1, main_panel=0)
+             title=f"{coin_name} / USDT - 1H Setup\n{timestamp_str}\n@desicryptopro",
+             figsize=(10, 10), returnfig=True, volume_panel=1, main_panel=0,
+             fill_between=shaded_zones, hlines=target_lines)
     
     ax_main = axlist[0] 
     
-    # Add Price Tag Annotation on the Y-Axis
-    ax_main.annotate(f'${latest_price:.2f}', 
-                xy=(df_chart.index[-1], latest_price), 
-                xytext=(8, 0), 
-                textcoords="offset points",
-                color='#ffffff',
-                fontsize=11, fontweight='bold',
-                bbox=dict(boxstyle="round,pad=0.3", fc=price_color, ec=price_color, lw=1))
+    # Text Labels for TP and SL
+    ax_main.text(df_chart.index[2], tp, '  TAKE PROFIT', color='#00ff00', fontsize=11, fontweight='bold', va='bottom')
+    ax_main.text(df_chart.index[2], sl, '  STOP LOSS', color='#ff3333', fontsize=11, fontweight='bold', va='bottom')
+
+    # Price Tag Annotation
+    ax_main.annotate(f'${latest_price:.2f}', xy=(df_chart.index[-1], latest_price), xytext=(8, 0), textcoords="offset points",
+                color='#ffffff', fontsize=11, fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", fc=trade_color, ec=trade_color, lw=1))
 
     # Save and clean up memory
     fig.savefig(buf, dpi=150, bbox_inches='tight')
@@ -176,7 +200,7 @@ def create_and_upload_chart(df, symbol):
     buf.seek(0)
     
     # Upload to ImgBB
-    print("Uploading timestamped chart to ImgBB...")
+    print("Uploading ultimate chart to ImgBB...")
     payload = {
         "key": IMGBB_API_KEY,
         "image": base64.b64encode(buf.read()).decode('utf-8')
@@ -201,7 +225,7 @@ def post(image_url, caption):
 
 # --- BOT MAIN LOOP ---
 def run_bot():
-    print("Agentic AI Bot with Professional Charting started!")
+    print("Agentic AI Bot with Ultimate Charting started!")
     while True:
         try:
             for coin in coins:
@@ -212,15 +236,16 @@ def run_bot():
                     htf_tech = analyze_technicals(df_htf)
                     ltf_tech = analyze_technicals(df_ltf)
                     
-                    chart_url = create_and_upload_chart(df_ltf, coin)
+                    # Pass the technical data to the chart function to draw SL/TP and Zones
+                    chart_url = create_and_upload_chart(df_ltf, coin, ltf_tech)
                     print(f"Chart generated: {chart_url}")
                     
                     caption = generate_agentic_caption(coin, htf_tech, ltf_tech)
                     
                     post(chart_url, caption)
-                    print(f"Agent successfully posted MTFA + Chart for: {coin}")
+                    print(f"Agent successfully posted Setup for: {coin}")
                     
-                time.sleep(15) # Brief pause between analyzing different coins
+                time.sleep(15) 
         except Exception as e:
             print(f"Error in bot loop: {e}")
             
@@ -232,7 +257,7 @@ class DummyServer(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"MTFA Agentic AI is running!")
+        self.wfile.write(b"Ultimate Agentic AI is running!")
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
