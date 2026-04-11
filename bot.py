@@ -6,8 +6,10 @@ import os
 import threading
 import io
 import base64
+from datetime import datetime, timedelta
 import google.generativeai as genai
 import mplfinance as mpf
+import matplotlib.pyplot as plt
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CREDENTIALS ---
@@ -108,34 +110,73 @@ def generate_agentic_caption(symbol, htf_data, ltf_data):
     response = ai_model.generate_content(prompt)
     return response.text
 
-# --- 4. CHART GENERATION & UPLOAD ---
+# --- 4. UPGRADED CHART GENERATION & UPLOAD ---
 def create_and_upload_chart(df, symbol):
-    # Slice to the last 50 candles so the chart is zoomed in and readable
-    df_chart = df.tail(50) 
+    df_chart = df.tail(60) 
     coin_name = symbol.replace("USDT", "")
-    
-    # Calculate EMAs for the plot
+    latest_data = df_chart.iloc[-1]
+    latest_price = latest_data['close']
+
+    # Generate IST Timestamp (UTC + 5:30)
+    current_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    timestamp_str = current_ist.strftime('%d %b %Y • %I:%M %p IST')
+
+    # Determine price color based on candle direction
+    price_color = '#00ff00' if latest_data['close'] >= latest_data['open'] else '#ff3333'
+
+    # Indicators
     ema20 = df_chart['close'].ewm(span=20, adjust=False).mean()
     ema50 = df_chart['close'].ewm(span=50, adjust=False).mean()
     
+    # Add plots
     added_plots = [
-        mpf.make_addplot(ema20, color='#00ffcc', width=1.5, title="20 EMA"), # Cyan EMA
-        mpf.make_addplot(ema50, color='#ff00ff', width=1.5, title="50 EMA")  # Magenta EMA
+        mpf.make_addplot(ema20, color='#00ffcc', width=1.5), 
+        mpf.make_addplot(ema50, color='#ff00ff', width=1.5), 
+        mpf.make_addplot(pd.Series([latest_price]*len(df_chart), index=df_chart.index), color=price_color, linestyle='--', width=0.8)
     ]
     
-    # Custom Dark Mode Theme
-    mc = mpf.make_marketcolors(up='#00ff00', down='#ff3333', edge='inherit', wick='inherit', volume='in', ohlc='i')
-    s = mpf.make_mpf_style(marketcolors=mc, base_mpf_style='nightclouds', gridstyle='dotted')
+    # Professional Dark Theme
+    custom_colors = mpf.make_marketcolors(
+        up='#00ff00', down='#ff3333',
+        edge={'up': '#00ff00', 'down': '#ff3333'},
+        wick={'up': '#00ff00', 'down': '#ff3333'},
+        volume='in', inherit=True
+        )
+
+    custom_style = mpf.make_mpf_style(
+        marketcolors=custom_colors,
+        facecolor='#080808',  
+        gridcolor='#1a1a1a', 
+        gridstyle='dotted',
+        y_on_right=True,     
+        rc={'font.size': 10, 'axes.labelsize': 12, 'axes.titlesize': 16, 'xtick.color': '#888888', 'ytick.color': '#888888', 'axes.edgecolor': '#333333', 'axes.labelcolor': '#ffffff'}
+        )
     
-    # Save chart to a memory buffer (no need to save files on Render)
     buf = io.BytesIO()
-    mpf.plot(df_chart, type='candle', style=s, addplot=added_plots, volume=False,
-             title=f"\n{coin_name} / USDT - 1H Timeframe\n@desicryptopro",
-             figsize=(10, 10), savefig=dict(fname=buf, dpi=150, bbox_inches='tight'))
+    
+    # Draw chart with Title and Timestamp
+    fig, axlist = mpf.plot(df_chart, type='candle', style=custom_style, addplot=added_plots, volume=True,
+             title=f"{coin_name} / USDT - 1H Timeframe\n{timestamp_str}\n@desicryptopro",
+             figsize=(10, 10), returnfig=True, volume_panel=1, main_panel=0)
+    
+    ax_main = axlist[0] 
+    
+    # Add Price Tag Annotation on the Y-Axis
+    ax_main.annotate(f'${latest_price:.2f}', 
+                xy=(df_chart.index[-1], latest_price), 
+                xytext=(8, 0), 
+                textcoords="offset points",
+                color='#ffffff',
+                fontsize=11, fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", fc=price_color, ec=price_color, lw=1))
+
+    # Save and clean up memory
+    fig.savefig(buf, dpi=150, bbox_inches='tight')
+    plt.close(fig) 
     buf.seek(0)
     
     # Upload to ImgBB
-    print("Uploading chart to ImgBB...")
+    print("Uploading timestamped chart to ImgBB...")
     payload = {
         "key": IMGBB_API_KEY,
         "image": base64.b64encode(buf.read()).decode('utf-8')
@@ -171,22 +212,19 @@ def run_bot():
                     htf_tech = analyze_technicals(df_htf)
                     ltf_tech = analyze_technicals(df_ltf)
                     
-                    # Generate the custom chart
                     chart_url = create_and_upload_chart(df_ltf, coin)
                     print(f"Chart generated: {chart_url}")
                     
-                    # Generate the AI caption
                     caption = generate_agentic_caption(coin, htf_tech, ltf_tech)
                     
-                    # Post to Instagram
                     post(chart_url, caption)
                     print(f"Agent successfully posted MTFA + Chart for: {coin}")
                     
-                time.sleep(15) 
+                time.sleep(15) # Brief pause between analyzing different coins
         except Exception as e:
             print(f"Error in bot loop: {e}")
             
-        time.sleep(7200)
+        time.sleep(7200) # Sleep for exactly 2 hours
 
 # --- RENDER DUMMY SERVER ---
 class DummyServer(BaseHTTPRequestHandler):
