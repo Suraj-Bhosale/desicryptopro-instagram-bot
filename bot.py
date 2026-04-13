@@ -6,14 +6,19 @@ import os
 import threading
 import io
 import base64
-import gc  # <--- Added Garbage Collector for Render memory management
-from datetime import datetime, timedelta
+import gc  
+from datetime import datetime, timedelta, timezone # <--- Added timezone
 import google.generativeai as genai
+
+# --- CRITICAL RENDER FIX ---
+import matplotlib
+matplotlib.use('Agg') # <--- Forces Matplotlib to run without a monitor so it doesn't freeze!
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- CREDENTIALS ---
+# Make sure these are set in your Render "Environment Variables" tab!
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 IG_USER_ID = "17841449038057212"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -86,6 +91,7 @@ def analyze_technicals(df):
 
 # --- 3. AI AGENT ---
 def generate_agentic_caption(symbol, htf_data, ltf_data):
+    print("Generating AI caption...")
     coin = symbol.replace("USDT", "")
 
     prompt = f"""
@@ -108,12 +114,14 @@ def generate_agentic_caption(symbol, htf_data, ltf_data):
 
 # --- 4. UPDATED PRO CHART ENGINE ---
 def create_and_upload_chart(df, symbol, tech_data):
+    print(f"Drawing chart for {symbol}...")
     df_chart = df.tail(60)
     coin_name = symbol.replace("USDT", "")
     latest = df_chart.iloc[-1]
     latest_price = latest['close']
 
-    current_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    # <--- FIXED: Deprecation Warning solved by using timezone.utc
+    current_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     timestamp_str = current_ist.strftime('%d %b %Y • %I:%M %p IST')
 
     support = tech_data['support_level']
@@ -175,8 +183,6 @@ def create_and_upload_chart(df, symbol, tech_data):
         bbox=dict(facecolor=color)
     )
 
-    # <--- Updated Text Placement: Placing text near the left edge of the chart
-    # using index position 5 to ensure it doesn't overlap recent candles or crash on index errors
     text_x_pos = df_chart.index[5] 
     
     ax.text(text_x_pos, tp, " TAKE PROFIT", color="green", fontweight='bold')
@@ -185,13 +191,14 @@ def create_and_upload_chart(df, symbol, tech_data):
 
     fig.savefig(buf, dpi=300, bbox_inches='tight')
     
-    # <--- Render Memory Fixes: Close everything and collect garbage
+    # Clean up memory
     plt.close(fig)
     plt.close('all') 
     gc.collect() 
     
     buf.seek(0)
-
+    
+    print("Uploading chart to ImgBB...")
     payload = {
         "key": IMGBB_API_KEY,
         "image": base64.b64encode(buf.read())
@@ -211,6 +218,7 @@ def post(image_url, caption):
         print("❌ Invalid Image URL, skipping post.")
         return
         
+    print("Publishing to Instagram...")
     url = f"https://graph.facebook.com/v18.0/{IG_USER_ID}/media"
     payload = {
         "image_url": image_url,
@@ -218,7 +226,6 @@ def post(image_url, caption):
         "access_token": ACCESS_TOKEN
     }
 
-    # <--- Added Error Handling for Media Creation
     r = requests.post(url, data=payload)
     if r.status_code != 200:
         print(f"❌ IG Media Creation Error: {r.json()}")
@@ -228,7 +235,6 @@ def post(image_url, caption):
 
     publish_url = f"https://graph.facebook.com/v18.0/{IG_USER_ID}/media_publish"
     
-    # <--- Added Error Handling for Media Publishing
     pub_r = requests.post(publish_url, data={
         "creation_id": creation_id,
         "access_token": ACCESS_TOKEN
@@ -242,6 +248,11 @@ def post(image_url, caption):
 # --- BOT LOOP ---
 def run_bot():
     print("🚀 Ultimate AI Agent Running...")
+    
+    # Quick sanity check for Environment Variables
+    if not ACCESS_TOKEN or not GEMINI_API_KEY or not IMGBB_API_KEY:
+        print("⚠️ WARNING: One or more API keys are missing. Check Render Environment Variables!")
+        
     while True:
         try:
             for coin in coins:
@@ -263,7 +274,8 @@ def run_bot():
         except Exception as e:
             print(f"⚠️ Encountered an error: {e}")
 
-        # Sleep for 2 hours before the next round of analysis
+        # Sleep for 2 hours
+        print("Waiting for next cycle...")
         time.sleep(7200)
 
 # --- SERVER ---
