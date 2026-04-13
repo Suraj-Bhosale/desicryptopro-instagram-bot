@@ -6,6 +6,7 @@ import os
 import threading
 import io
 import base64
+import gc  # <--- Added Garbage Collector for Render memory management
 from datetime import datetime, timedelta
 import google.generativeai as genai
 import mplfinance as mpf
@@ -28,7 +29,7 @@ def get_market_data(symbol, interval):
     url = f"https://api.binance.us/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
     data = requests.get(url).json()
 
-    if isinstance(data, dict):
+    if isinstance(data, dict) and 'code' in data:
         print(f"API Error on {interval}: {data}")
         return None
 
@@ -164,8 +165,9 @@ def create_and_upload_chart(df, symbol, tech_data):
 
     ax = axlist[0]
 
+    # Bias Box
     ax.text(
-        0.01,0.97,
+        0.01, 0.97,
         f"{coin_name} | {bias}",
         transform=ax.transAxes,
         fontsize=14,
@@ -173,12 +175,21 @@ def create_and_upload_chart(df, symbol, tech_data):
         bbox=dict(facecolor=color)
     )
 
-    ax.text(df_chart.index[2], tp, " TAKE PROFIT", color="green")
-    ax.text(df_chart.index[2], sl, " STOP LOSS", color="red")
-    ax.text(df_chart.index[2], latest_price, " ENTRY", color="white")
+    # <--- Updated Text Placement: Placing text near the left edge of the chart
+    # using index position 5 to ensure it doesn't overlap recent candles or crash on index errors
+    text_x_pos = df_chart.index[5] 
+    
+    ax.text(text_x_pos, tp, " TAKE PROFIT", color="green", fontweight='bold')
+    ax.text(text_x_pos, sl, " STOP LOSS", color="red", fontweight='bold')
+    ax.text(text_x_pos, latest_price, " ENTRY", color="white", fontweight='bold')
 
     fig.savefig(buf, dpi=300, bbox_inches='tight')
+    
+    # <--- Render Memory Fixes: Close everything and collect garbage
     plt.close(fig)
+    plt.close('all') 
+    gc.collect() 
+    
     buf.seek(0)
 
     payload = {
@@ -187,10 +198,19 @@ def create_and_upload_chart(df, symbol, tech_data):
     }
 
     res = requests.post("https://api.imgbb.com/1/upload", data=payload)
+    
+    if res.status_code != 200:
+        print(f"❌ ImgBB Upload Error: {res.text}")
+        return None
+        
     return res.json()['data']['url']
 
 # --- 5. INSTAGRAM POST ---
 def post(image_url, caption):
+    if not image_url:
+        print("❌ Invalid Image URL, skipping post.")
+        return
+        
     url = f"https://graph.facebook.com/v18.0/{IG_USER_ID}/media"
     payload = {
         "image_url": image_url,
@@ -198,21 +218,34 @@ def post(image_url, caption):
         "access_token": ACCESS_TOKEN
     }
 
+    # <--- Added Error Handling for Media Creation
     r = requests.post(url, data=payload)
-    creation_id = r.json()["id"]
+    if r.status_code != 200:
+        print(f"❌ IG Media Creation Error: {r.json()}")
+        return
+        
+    creation_id = r.json().get("id")
 
     publish_url = f"https://graph.facebook.com/v18.0/{IG_USER_ID}/media_publish"
-    requests.post(publish_url, data={
+    
+    # <--- Added Error Handling for Media Publishing
+    pub_r = requests.post(publish_url, data={
         "creation_id": creation_id,
         "access_token": ACCESS_TOKEN
     })
+    
+    if pub_r.status_code != 200:
+        print(f"❌ IG Publish Error: {pub_r.json()}")
+    else:
+        print("✅ Successfully published to Instagram!")
 
 # --- BOT LOOP ---
 def run_bot():
-    print("Ultimate AI Agent Running...")
+    print("🚀 Ultimate AI Agent Running...")
     while True:
         try:
             for coin in coins:
+                print(f"Analyzing {coin}...")
                 df_htf = get_market_data(coin, '1d')
                 df_ltf = get_market_data(coin, '1h')
 
@@ -224,13 +257,13 @@ def run_bot():
                     caption = generate_agentic_caption(coin, htf, ltf)
 
                     post(chart, caption)
-                    print(f"Posted {coin}")
 
                 time.sleep(15)
 
         except Exception as e:
-            print(e)
+            print(f"⚠️ Encountered an error: {e}")
 
+        # Sleep for 2 hours before the next round of analysis
         time.sleep(7200)
 
 # --- SERVER ---
@@ -242,6 +275,7 @@ class DummyServer(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.environ.get("PORT",10000))
+    port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), DummyServer)
+    print(f"🌐 Dummy Server bound to port {port}")
     server.serve_forever()
