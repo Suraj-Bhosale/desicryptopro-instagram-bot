@@ -1,6 +1,6 @@
 requests
 pandas
 numpy
-google-generativeai
-mplfinance
 matplotlib
+mplfinance
+google-generativeai
